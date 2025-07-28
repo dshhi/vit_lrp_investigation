@@ -12,7 +12,7 @@ from utils.logging import get_logger
 from utils.args import get_public_config
 from utils.functions import set_seed
 from utils.functions import get_vit_imagenet
-from utils.functions import create_histograms_for_mlp_blocks
+from utils.functions import create_histograms_for_mlp_blocks_vit
 
 from torchvision.models import vision_transformer
 from zennit.image import imgify
@@ -88,7 +88,7 @@ def main():
         mlp_blocks.append(mlp_layer)
 
     # Example usage (assuming 'mlp_blocks' is your list of MLP blocks):
-    create_histograms_for_mlp_blocks(args, mlp_blocks)
+    create_histograms_for_mlp_blocks_vit(args, mlp_blocks)
 
     # Store the generated heatmaps
     heatmaps = []

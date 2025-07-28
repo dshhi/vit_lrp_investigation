@@ -16,6 +16,7 @@ import matplotlib.pyplot as plt
 from scipy import stats
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+from tqdm import tqdm
 
 # reproducibility
 def set_seed(seed):
@@ -53,9 +54,11 @@ def get_vit_imagenet(args):
 
 def get_llm_model(args):
     # Load the tokenizer and model
-    tokenizer = AutoTokenizer.from_pretrained(args.llm_model)
+    if (args.llm_model == 'Qwen3-0.6B'):
+        model_name = "Qwen/Qwen3-0.6B"
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = AutoModelForCausalLM.from_pretrained(
-        args.llm_model,
+        model_name,
         torch_dtype="auto",
         device_map="auto"
     )
@@ -69,7 +72,7 @@ def get_llm_model(args):
 
     return tokenizer,model
 
-def calculate_angles(mlp_block):
+def calculate_angles_vit(mlp_block):
     """
     Calculate angles between weight vectors in the MLP block.
 
@@ -119,6 +122,55 @@ def calculate_angles(mlp_block):
     
     return angles
 
+def calculate_angles_qwen(mlp_block):
+    """
+    Calculate angles between weight vectors in the MLP block.
+
+    Parameters:
+    mlp_block: The MLP block from which to extract weight vectors.
+
+    Returns:
+    angles: List of angles in degrees.
+    """
+    angles = []
+    
+    # Access the weights of the first linear layer (index 0)
+    # try:
+    #     weights1 = mlp_block.named_parameters().__next__()[1].data.cpu().numpy()  # Get weights from the first linear layer
+    # except StopIteration:
+    #     print("No parameters found in MLP block.")
+    #     return []
+
+    # Access the weights of the second linear layer (index 3)
+    try:
+        for name, param in mlp_block.named_parameters():
+            if name == 'down_proj.weight':
+                weights2 = param.data.to(torch.float32)
+                weights2 = weights2.data.cpu().numpy()
+                break
+        
+        if weights2 is None:
+            print("Second linear layer weights not found.")
+            return []
+    except Exception as e:
+        print(f"Error accessing weights: {e}")
+        return []
+
+    # Combine weights from both layers
+    all_weights = [weights2]
+    
+    # Calculate angles between all pairs of weights
+    for weights in all_weights:
+        for i in range(len(weights)):
+            for j in range(i + 1, len(weights)):
+                dot_product = np.dot(weights[i], weights[j])
+                norm_i = np.linalg.norm(weights[i])
+                norm_j = np.linalg.norm(weights[j])
+                cos_theta = dot_product / (norm_i * norm_j)
+                angle = np.degrees(np.arccos(np.clip(cos_theta, -1.0, 1.0)))
+                angles.append(angle)
+    
+    return angles
 
 def calculate_metrics(angles):
     """
@@ -353,7 +405,7 @@ def plot_boxplot(args, angles, mlp_index):
 
 
 
-def create_histograms_for_mlp_blocks(args, mlp_blocks):
+def create_histograms_for_mlp_blocks_vit(args, mlp_blocks):
     """
     Loop through all MLP blocks, calculate angles, create histograms, and save them.
 
@@ -362,7 +414,30 @@ def create_histograms_for_mlp_blocks(args, mlp_blocks):
     """
     all_metrics = []
     for index, mlp_block in enumerate(mlp_blocks):
-        angles = calculate_angles(mlp_block)
+        angles = calculate_angles_vit(mlp_block)
+        plot_histogram(args, angles, index)
+        plot_histogram_logarithmic(args, angles, index)
+        plot_boxplot(args, angles, index)
+        # Calculate metrics and save to markdown
+        metrics = calculate_metrics(angles)
+        all_metrics.append(metrics)
+
+    save_metrics_to_markdown_table(args, all_metrics)
+
+
+def create_histograms_for_mlp_blocks_qwen(args, mlp_blocks):
+    """
+    Loop through all MLP blocks, calculate angles, create histograms, and save them.
+
+    Parameters:
+    mlp_blocks: List of MLP blocks to process.
+    """
+    all_metrics = []
+    # for index, mlp_block in enumerate(mlp_blocks):
+    for index, mlp_block in tqdm(enumerate(mlp_blocks),
+                                 total=len(mlp_blocks),
+                                 desc="Processing MLP Blocks"):
+        angles = calculate_angles_qwen(mlp_block)
         plot_histogram(args, angles, index)
         plot_histogram_logarithmic(args, angles, index)
         plot_boxplot(args, angles, index)
