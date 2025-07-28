@@ -50,8 +50,6 @@ def get_config():
     logger = get_logger(log_dir, __name__, "record_s{}.log".format(args.seed))
     logger.info(args)
 
-
-
     return args, log_dir, logger, plot_dir
 
 def main():

@@ -1,25 +1,53 @@
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import torch
 
+import numpy as np
+import torch
+import itertools
+import sys
+import argparse
+from pathlib import Path
 import pdb
 SCRIPT_DIR = Path(__file__).resolve().parent
+sys.path.append(str(SCRIPT_DIR))
 
+from utils.logging import get_logger
 # model loading
-from utils import get_llm_model
-# computation utils
-from utils import calculate_angles, calculate_metrics, save_metrics_to_markdown_table
-# plotting utils
-from utils import plot_histogram, plot_histogram_logarithmic, plot_boxplot, create_histograms_for_mlp_blocks,
+from utils.functions import get_llm_model
+from utils.functions import set_seed
+from utils.functions import create_histograms_for_mlp_blocks
 # hooks
-from utils import create_hook
+from utils.functions import create_hook
 
+import numpy as np
+import torch
+import itertools
+import sys
+import argparse
+from pathlib import Path
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+sys.path.append(str(SCRIPT_DIR))
+
+from utils.logging import get_logger
+from utils.args import get_public_config
+from utils.functions import set_seed
+from utils.functions import get_vit_imagenet
+from utils.functions import create_histograms_for_mlp_blocks
+
+from torchvision.models import vision_transformer
+from zennit.image import imgify
+from zennit.composites import LayerMapComposite
+import zennit.rules as z_rules
+from lxt.efficient import monkey_patch, monkey_patch_zennit
+from PIL import Image
+from torchinfo import summary
+
+monkey_patch(vision_transformer, verbose=True)
+monkey_patch_zennit(verbose=True)
 
 def get_config():
     parser = get_public_config()
-
-    results_dir = SCRIPT_DIR.parents / "results"
-    plots_dir = f"{results_dir}/plots"
-
     # Logger
     # log_dir = "{}/{}/{}/seq_len_{}_pred_len_{}_bs_{}/".format(
     #     base_dir,
@@ -29,6 +57,11 @@ def get_config():
     #     args.horizon,
     #     args.batch_size,
     # )
+    args = parser.parse_args()
+    results_dir = SCRIPT_DIR / "results" / f"{args.vit_model}"
+    plot_dir = f"{results_dir}/plots"
+    args.results_dir = results_dir
+    args.plot_path = plot_dir
     log_dir = results_dir
 
     log_dir = Path(log_dir)
@@ -37,10 +70,10 @@ def get_config():
     logger = get_logger(log_dir, __name__, "record_s{}.log".format(args.seed))
     logger.info(args)
 
-    return args, log_dir, logger, plots_dir
+    return args, log_dir, logger, plot_dir
 
 def main():
-    args, log_dir, logger = get_config()
+    args, log_dir, logger, plot_dir = get_config()
     set_seed(args.seed)
 
     # Set up results directory based on model
@@ -53,12 +86,26 @@ def main():
     Path(plots_dir).mkdir(parents=True, exist_ok=True)
 
     # Prepare input text
-    tokenizer,model = get_llm_model(device="cuda")
+    tokenizer ,model = get_llm_model(args)
     input_text = "Polar bears live in"
     input_ids = tokenizer(input_text, return_tensors='pt').input_ids.to("cuda")
 
     # Forward pass
     output = model(input_ids)
+    summary(model, (input_ids.shape))
+
+    mlp_blocks = []
+    pdb.set_trace()
+
+    # Access the encoder layers
+    for encoder_block in model.encoder.layers:
+        # Each encoder block typically has an MLP layer named 'mlp'
+        mlp_layer = encoder_block.mlp
+        mlp_blocks.append(mlp_layer)
+    pdb.set_trace()
+
+    # Example usage (assuming 'mlp_blocks' is your list of MLP blocks):
+    create_histograms_for_mlp_blocks(args, mlp_blocks)
 
     # Get the top 5 predictions (if applicable)
     logits = output.logits
@@ -80,3 +127,6 @@ def main():
     logits.requires_grad_()
     logits[0, top5_classes[0][0]].backward()
 
+
+if __name__ == "__main__":
+    main()

@@ -14,6 +14,7 @@ import torchvision.transforms as transforms
 import os
 import matplotlib.pyplot as plt
 from scipy import stats
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 
 # reproducibility
@@ -50,17 +51,17 @@ def get_vit_imagenet(args):
 
 # load the tokenizer and the model
 
-def get_llm_model(device="cuda"):
+def get_llm_model(args):
     # Load the tokenizer and model
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    tokenizer = AutoTokenizer.from_pretrained(args.llm_model)
     model = AutoModelForCausalLM.from_pretrained(
-        model_name,
+        args.llm_model,
         torch_dtype="auto",
         device_map="auto"
     )
 
     model.eval()
-    model.to(device)
+    model.to(args.device)
 
     # Deactivate gradients on parameters to save memory
     for param in model.parameters():

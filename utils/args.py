@@ -8,7 +8,7 @@ def get_public_config():
     # parser.add_argument("--device", type=str, default="cuda")
 
     # Model
-    parser.add_argument('--llm_model', choices=['Qwen3-0.6B'], required=False, 
+    parser.add_argument('--llm_model', type=str, choices=['Qwen3-0.6B'], required=False, 
                         help='Select the llm model to use.', default = 'Qwen3-0.6B')
     parser.add_argument('--vit_model', type=str, choices=['vitb16', 'vitl16'], 
                         required=False, help='Specify the vit model to use: vitb16 or vitl16', default='vitb16')
