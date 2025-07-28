@@ -1,0 +1,38 @@
+
+Without hook:
+Processing Test Set: 100%|██████████████████| 1563/1563 [11:48<00:00,  2.21batch/s]
+Accuracy of the model on the imagenet test set: 79.06%
+
+
+With hook:
+
+
+
+Top 100:
+Processing Test Set: 100%|██████████████████| 1563/1563 [11:59<00:00,  2.17batch/s]
+Accuracy of the model on the imagenet test set: 60.41%
+
+Top 150:
+Processing Test Set: 100%|██████████████████| 1563/1563 [10:44<00:00,  2.42batch/s]
+Accuracy of the model on the imagenet test set: 72.61%
+
+Top 200:
+Processing Test Set: 100%|██████████████████| 1563/1563 [11:05<00:00,  2.35batch/s]
+Accuracy of the model on the imagenet test set: 76.23%
+
+Top 250:
+Processing Test Set: 100%|██████████████████| 1563/1563 [11:12<00:00,  2.32batch/s]
+Accuracy of the model on the imagenet test set: 77.75%
+
+Top 300:
+Processing Test Set: 100%|██████████████████| 1563/1563 [11:18<00:00,  2.30batch/s]
+Accuracy of the model on the imagenet test set: 78.36%
+
+Top 350:
+Processing Test Set: 100%|██████████████████| 1563/1563 [11:00<00:00,  2.37batch/s]
+Accuracy of the model on the imagenet test set: 78.76%
+
+Top 500:
+Processing Test Set: 100%|██████████████████| 1563/1563 [12:40<00:00,  2.06batch/s]
+Accuracy of the model on the imagenet test set: 79.02%
+
