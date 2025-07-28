@@ -1,5 +1,6 @@
+import numpy as np
 import torch
-import itertools
+from pathlib import Path
 from PIL import Image
 from torchvision.models import vision_transformer
 
@@ -7,39 +8,56 @@ from zennit.image import imgify
 from zennit.composites import LayerMapComposite
 import zennit.rules as z_rules
 
-from lxt.efficient import monkey_patch, monkey_patch_zennit
 import pdb
 import PIL
 import torchvision.transforms as transforms
 import os
-import numpy as np
 import matplotlib.pyplot as plt
-from torchinfo import summary
-from pathlib import Path
 from scipy import stats
-import argparse
-
-monkey_patch(vision_transformer, verbose=True)
-monkey_patch_zennit(verbose=True)
 
 
-# Initialize the argument parser
-parser = argparse.ArgumentParser(description='Select model type for Vision Transformer.')
-parser.add_argument('--model', type=str, choices=['vitb16', 'vitl16'], required=True,
-                    help='Specify the model to use: vitb16 or vitl16')
+# reproducibility
+def set_seed(seed):
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    # might consider setting this to True
+    torch.backends.cudnn.deterministic = False
+    torch.backends.cudnn.benchmark = False
 
+## Load models
 
 # Load the pre-trained ViT model based on the argument
-def get_vit_imagenet(device="cuda"):
+def get_vit_imagenet(args):
     """
     Load a pre-trained Vision Transformer (ViT) model with ImageNet weights.
     """
-    if args.model == 'vitb16':
+    if args.vit_model == 'vitb16':
         weights = vision_transformer.ViT_B_16_Weights.IMAGENET1K_V1
         model = vision_transformer.vit_b_16(weights=weights)
-    elif args.model == 'vitl16':
+    elif args.vit_model == 'vitl16':
         weights = vision_transformer.ViT_L_16_Weights.IMAGENET1K_V1
         model = vision_transformer.vit_l_16(weights=weights)
+
+    model.eval()
+    model.to(args.device)
+
+    # Deactivate gradients on parameters to save memory
+    for param in model.parameters():
+        param.requires_grad = False
+
+    return model, weights
+
+# load the tokenizer and the model
+
+def get_llm_model(device="cuda"):
+    # Load the tokenizer and model
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        torch_dtype="auto",
+        device_map="auto"
+    )
 
     model.eval()
     model.to(device)
@@ -48,8 +66,7 @@ def get_vit_imagenet(device="cuda"):
     for param in model.parameters():
         param.requires_grad = False
 
-    return model, weights
-
+    return tokenizer,model
 
 def calculate_angles(mlp_block):
     """
@@ -142,7 +159,7 @@ def calculate_metrics(angles):
     }
 
 
-def save_metrics_to_markdown_table(all_metrics):
+def save_metrics_to_markdown_table(args, all_metrics):
     """
     Save all calculated metrics to a markdown file as a table.
 
@@ -166,17 +183,17 @@ def save_metrics_to_markdown_table(all_metrics):
         rows += row
 
     # Create 'metrics' directory if it doesn't exist
-    Path(f'{plot_folder}/metrics').mkdir(parents=True, exist_ok=True)
+    Path(f'{args.results_dir}/metrics').mkdir(parents=True, exist_ok=True)
     
     # Write to markdown file
-    with open(f'{plot_folder}/metrics/metrics.md', 'w') as f:
+    with open(f'{args.results_dir}/metrics/metrics.md', 'w') as f:
         f.write(header)
         f.write(separator)
         f.write(rows)
 
 # Plot functions
 
-def plot_histogram(angles, mlp_index):
+def plot_histogram(args, angles, mlp_index):
     """
     Create a histogram plot of the angles and save it.
 
@@ -222,12 +239,12 @@ def plot_histogram(angles, mlp_index):
     plt.tight_layout()
 
     # Create the directory if it doesn't exist
-    Path(plot_folder).mkdir(parents=True, exist_ok=True)
-    plt.savefig(f'{plot_folder}/mlp_block_{mlp_index}_angles_histogram.png')
+    Path(args.plot_path).mkdir(parents=True, exist_ok=True)
+    plt.savefig(f'{args.plot_path}/mlp_block_{mlp_index}_angles_histogram.png')
     plt.close()
 
     
-def plot_histogram_logarithmic(angles, mlp_index):
+def plot_histogram_logarithmic(args, angles, mlp_index):
     """
     Create a histogram plot of the angles and save it.
 
@@ -276,11 +293,11 @@ def plot_histogram_logarithmic(angles, mlp_index):
     plt.tight_layout()
 
     # Create the directory if it doesn't exist
-    Path(plot_folder).mkdir(parents=True, exist_ok=True)
-    plt.savefig(f'{plot_folder}/mlp_block_{mlp_index}_angles_histogram_logarithmic.png')
+    Path(args.plot_path).mkdir(parents=True, exist_ok=True)
+    plt.savefig(f'{args.plot_path}/mlp_block_{mlp_index}_angles_histogram_logarithmic.png')
     plt.close()
 
-def plot_boxplot(angles, mlp_index):
+def plot_boxplot(args, angles, mlp_index):
     """
     Create a horizontal box plot of the angles and save it.
 
@@ -329,13 +346,13 @@ def plot_boxplot(angles, mlp_index):
              bbox=dict(facecolor='white', alpha=0.5), ha='center')  # Center align the text
 
     # Create the directory if it doesn't exist
-    Path(plot_folder).mkdir(parents=True, exist_ok=True)
-    plt.savefig(f'{plot_folder}/mlp_block_{mlp_index}_angles_boxplot.png')
+    Path(args.plot_path).mkdir(parents=True, exist_ok=True)
+    plt.savefig(f'{args.plot_path}/mlp_block_{mlp_index}_angles_boxplot.png')
     plt.close()
 
 
 
-def create_histograms_for_mlp_blocks(mlp_blocks):
+def create_histograms_for_mlp_blocks(args, mlp_blocks):
     """
     Loop through all MLP blocks, calculate angles, create histograms, and save them.
 
@@ -345,14 +362,14 @@ def create_histograms_for_mlp_blocks(mlp_blocks):
     all_metrics = []
     for index, mlp_block in enumerate(mlp_blocks):
         angles = calculate_angles(mlp_block)
-        plot_histogram(angles, index)
-        plot_histogram_logarithmic(angles, index)
-        plot_boxplot(angles, index)
+        plot_histogram(args, angles, index)
+        plot_histogram_logarithmic(args, angles, index)
+        plot_boxplot(args, angles, index)
         # Calculate metrics and save to markdown
         metrics = calculate_metrics(angles)
         all_metrics.append(metrics)
 
-    save_metrics_to_markdown_table(all_metrics)
+    save_metrics_to_markdown_table(args, all_metrics)
 
 def create_hook(topk=100):
     def forward_hook(module, input, output):
@@ -367,92 +384,3 @@ def create_hook(topk=100):
             mask.scatter_(2, indices, 1)
         return output * mask
     return forward_hook
-
-# Parse the command line arguments
-args = parser.parse_args()
-
-# Load the pre-trained ViT model
-model, weights = get_vit_imagenet()
-# Update the save path for plots based on the model
-plot_folder = args.model  # 'vitb16' or 'vitl16'
-
-
-# for layer in model.encoder.layers:
-#     #layer.mlp[0].register_forward_hook(create_hook(2500))
-#     layer.mlp[3].register_forward_hook(create_hook(500))
-#     pass
-
-# Load and preprocess the input image
-image = Image.open('cat_dog.jpg').convert('RGB')
-# image_resized = image.resize([224,224])
-# image_resized.convert('L').save('input_resized_grayscale.jpg')
-# image_resized.save('input_resized.jpg')
-input_tensor = weights.transforms()(image).unsqueeze(0).to("cuda")
-# img_size = image.size  # (width, height)
-summary(model, (input_tensor.shape))
-# Assuming 'model' is your Vision Transformer model
-mlp_blocks = []
-
-# Access the encoder layers
-for encoder_block in model.encoder.layers:
-    # Each encoder block typically has an MLP layer named 'mlp'
-    mlp_layer = encoder_block.mlp
-    mlp_blocks.append(mlp_layer)
-
-for index, mlp_block in enumerate(mlp_blocks):
-        print(f"MLP Block {index}:")
-        print(dir(mlp_block)) 
-for name, param in mlp_block.named_parameters():
-        print(f"Parameter Name: {name}, Shape: {param.shape}")
-
-# Example usage (assuming 'mlp_blocks' is your list of MLP blocks):
-create_histograms_for_mlp_blocks(mlp_blocks)
-
-# Store the generated heatmaps
-heatmaps = []
-
-#############################################################
-# Use topk activations for experimenting with epsilon rule:
-#############################################################
-
-input_tensor.grad = None  # Reset gradients
-zennit_comp = LayerMapComposite([
-    (torch.nn.Conv2d, z_rules.Epsilon()),
-    (torch.nn.Linear, z_rules.Epsilon()),
-])
-
-# Register the composite rules with the model
-zennit_comp.register(model)
-
-# Forward pass with gradient tracking enabled
-y = model(input_tensor.requires_grad_())
-
-# Get the top 5 predictions
-_, top5_classes = torch.topk(y, 5, dim=1)
-top5_classes = top5_classes.squeeze(0).tolist()
-
-# Get the class labels
-labels = weights.meta["categories"]
-top5_labels = [labels[class_idx] for class_idx in top5_classes]
-
-# Print the top 5 predictions and their labels
-for i, class_idx in enumerate(top5_classes):
-    print(f'Top {i+1} predicted class: {class_idx}, label: {top5_labels[i]}')
-
-# Backward pass for the highest probability class
-# This initiates the LRP computation through the network
-y[0, 156].backward()
-
-# Remove the registered composite to prevent interference in future iterations
-zennit_comp.remove()
-
-# Calculate the relevance by computing Gradient * Input
-# This is the final step of LRP to get the pixel-wise explanation
-heatmap = (input_tensor * input_tensor.grad).sum(1)
-
-# Normalize relevance between [-1, 1] for plotting
-heatmap = heatmap / abs(heatmap).max()
-heatmap = heatmap.detach().cpu().numpy()
-
-img = imgify(heatmap, vmin=-1, vmax=1)
-img.convert('RGB').save('vit_heatmap.jpg')
