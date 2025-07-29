@@ -81,7 +81,8 @@ def get_model(args):
         # pip install accelerate
 
         model = Gemma3ForConditionalGeneration.from_pretrained(
-            model_id, device_map="auto"
+            # model_id, device_map="auto"
+            model_id, device_map=args.device
         ).eval()
 
         processor = AutoProcessor.from_pretrained(model_id)
@@ -124,6 +125,7 @@ def calculate_angles_mlp_block(args,mlp_block):
                 if name == 'fc2.weight':
                     weights2 = param.data.cpu().numpy()
                     break
+                pdb.set_trace()
                 if name == 'down_proj.weight':
                     weights2 = param.data.cpu().numpy()
                     break

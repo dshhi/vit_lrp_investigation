@@ -103,91 +103,13 @@ def main():
         # Example usage (assuming 'mlp_blocks' is your list of MLP blocks):
         create_histograms_for_mlp_blocks(args, mlp_blocks)
 
-        # # Store the generated heatmaps
-        # heatmaps = []
-        #
-        # #############################################################
-        # # Use topk activations for experimenting with epsilon rule:
-        # #############################################################
-        #
-        # input_tensor.grad = None  # Reset gradients
-        # zennit_comp = LayerMapComposite([
-        #     (torch.nn.Conv2d, z_rules.Epsilon()),
-        #     (torch.nn.Linear, z_rules.Epsilon()),
-        # ])
-        #
-        # # Register the composite rules with the model
-        # zennit_comp.register(model)
-        #
-        # # Forward pass with gradient tracking enabled
-        # y = model(input_tensor.requires_grad_())
-        #
-        # # Get the top 5 predictions
-        # _, top5_classes = torch.topk(y, 5, dim=1)
-        # top5_classes = top5_classes.squeeze(0).tolist()
-        #
-        # # Get the class labels
-        # labels = weights.meta["categories"]
-        # top5_labels = [labels[class_idx] for class_idx in top5_classes]
-        #
-        # # Print the top 5 predictions and their labels
-        # for i, class_idx in enumerate(top5_classes):
-        #     print(f'Top {i+1} predicted class: {class_idx}, label: {top5_labels[i]}')
-        #
-        # # Backward pass for the highest probability class
-        # # This initiates the LRP computation through the network
-        # y[0, 156].backward()
-        #
-        # # Remove the registered composite to prevent interference in future iterations
-        # zennit_comp.remove()
-        #
-        # # Calculate the relevance by computing Gradient * Input
-        # # This is the final step of LRP to get the pixel-wise explanation
-        # heatmap = (input_tensor * input_tensor.grad).sum(1)
-        #
-        # # Normalize relevance between [-1, 1] for plotting
-        # heatmap = heatmap / abs(heatmap).max()
-        # heatmap = heatmap.detach().cpu().numpy()
-        #
-        # img = imgify(heatmap, vmin=-1, vmax=1)
-        # img.convert('RGB').save('vit_heatmap.jpg')
     elif model_name in ('Qwen3-0.6B'):
         # Prepare input text
         model,tokenizer = get_model(args)
-        # prompt = "Polar bears live in"
-        #
-        # messages = [
-        #     {"role": "user", "content": prompt}
-        # ]
-        # text = tokenizer.apply_chat_template(
-        #     messages,
-        #     tokenize=False,
-        #     add_generation_prompt=True,
-        #     enable_thinking=True # Switches between thinking and non-thinking modes. Default is True.
-        # )
-        #
-        # model_inputs = tokenizer([text], return_tensors="pt").to(model.device)
-        #
-        #
-        # # Use torchinfo to get the summary
-        # # summary(model, (model_inputs.shape))
-        # # summary(model, input_size=(1, inputs_ids['input_ids'].shape[1]))
-        #
-        # # Forward pass
-        # #
-        # generated_ids = model.generate(
-        #                     **model_inputs,
-        #                     max_new_tokens=32768
-        #                 )
-        # output_ids = generated_ids[0][len(model_inputs.input_ids[0]):].tolist()
-
-        # output = model(input_ids)
-
         # summary(model, input_size=(1, input_ids['input_ids'].shape[1]))
         # summary(model, (input_ids.shape))
 
         mlp_blocks = []
-        # pdb.set_trace()
 
         # Access the encoder layers
         for model_layer in model.model.layers:
@@ -198,25 +120,6 @@ def main():
         # Example usage (assuming 'mlp_blocks' is your list of MLP blocks):
         create_histograms_for_mlp_blocks(args, mlp_blocks)
 
-        # # Get the top 5 predictions (if applicable)
-        # logits = output.logits
-        # _, top5_classes = torch.topk(logits, 5, dim=-1)
-        # top5_classes = top5_classes.squeeze(0).tolist()
-        #
-        # # Assuming you have a way to map class indices to labels
-        # # Here, we would need a specific label mapping depending on your task
-        # # top5_labels = [labels[class_idx] for class_idx in top5_classes]
-        # # labels = ["label1", "label2", ...]  # Define your labels
-        #
-        # # Print the top 5 predictions
-        # for i, class_idx in enumerate(top5_classes):
-        #     print(f'Top {i+1} predicted class index: {class_idx}')  # Print class indices
-        #
-        # # Backward pass for the highest probability class (if needed)
-        # # If you want to compute gradients, you need to ensure that requires_grad=True
-        # logits = logits.squeeze(0)
-        # logits.requires_grad_()
-        # logits[0, top5_classes[0][0]].backward()
     if model_name in ('gemma-3-12b-it', 'gemma-3-4b-it'):
         model, processor = get_model(args)
         args.results_dir = args.results_dir / "vision_model"
@@ -227,11 +130,10 @@ def main():
         for model_layer in model.model.vision_tower.vision_model.encoder.layers:
             # Each encoder block typically has an MLP layer named 'mlp'
             mlp_layer = model_layer.mlp
-            mlp_blocks.append(mlp_layer)
+            vision_model_mlp_blocks.append(mlp_layer)
 
         # Example usage (assuming 'mlp_blocks' is your list of MLP blocks):
-        create_histograms_for_mlp_blocks(args, mlp_blocks)
-        pdb.set_trace()
+        create_histograms_for_mlp_blocks(args, vision_model_mlp_blocks)
 
         args.results_dir = args.results_dir / "language_model"
         args.plot_path = args.results_dir / "plots"
@@ -241,10 +143,10 @@ def main():
         for model_layer in model.model.language_model.layers:
             # Each encoder block typically has an MLP layer named 'mlp'
             mlp_layer = model_layer.mlp
-            mlp_blocks.append(mlp_layer)
+            language_model_mlp_blocks.append(mlp_layer)
 
         # Example usage (assuming 'mlp_blocks' is your list of MLP blocks):
-        create_histograms_for_mlp_blocks(args, mlp_blocks)
+        create_histograms_for_mlp_blocks(args, language_model_mlp_blocks)
 
 
 if __name__ == "__main__":
