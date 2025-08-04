@@ -54,14 +54,18 @@ def get_model(args):
         return model, weights
 
     # Load the tokenizer and model
-    elif args.model in ('Qwen3-0.6B'):
-        model_name = "Qwen/Qwen3-0.6B"
-
+    elif args.model in ('qwen3-0.6B', 'qwen2-0.5B','qwen2-7B'):
+        if args.model == 'qwen2-0.5B':
+            model_name = "Qwen/Qwen2-0.5B"
+        if args.model == 'qwen2-7B':
+            model_name = "Qwen/Qwen2-7B"
+        elif args.model == 'qwen3-0.6B':
+            model_name = "Qwen/Qwen3-0.6B"
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
             torch_dtype="auto",
-            device_map="auto"
+            device_map=args.device
         )
 
         model.eval()
@@ -116,7 +120,7 @@ def calculate_angles_mlp_block(args,mlp_block):
                 if name == '3.weight':
                     weights2 = param.data.cpu().numpy()
                     break
-            elif args.model in ('Qwen3-0.6B'):
+            elif args.model in ('qwen3-0.6B','qwen2-0.5B','qwen2-7B'):
                 if name == 'down_proj.weight':
                     weights2 = param.data.to(torch.float32)
                     weights2 = weights2.data.cpu().numpy()           
@@ -125,7 +129,6 @@ def calculate_angles_mlp_block(args,mlp_block):
                 if name == 'fc2.weight':
                     weights2 = param.data.cpu().numpy()
                     break
-                pdb.set_trace()
                 if name == 'down_proj.weight':
                     weights2 = param.data.cpu().numpy()
                     break

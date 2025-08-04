@@ -55,7 +55,22 @@ def get_config():
     #     args.batch_size,
     # )
     args = parser.parse_args()
-    results_dir = SCRIPT_DIR / "results" / f"{args.model}"
+    results_dir = SCRIPT_DIR / "results"
+    #language models
+    if args.model in ('qwen3-0.6B', 'qwen2-0.5B','qwen2-7B',
+                      ):
+        results_dir = results_dir / "language" / f"{args.model}"
+    #vision models
+    elif args.model in ('vitb16', 'vitl16',
+                        ):
+        results_dir = results_dir / "vision" / f"{args.model}"
+    #multi-modal models
+    elif args.model in ('gemma-3-12b-it', 'gemma-3-4b-it',
+                        ):
+        # save path gets handled in function for vision and language part
+        # separately
+        pass
+
     plot_dir = f"{results_dir}/plots"
     args.results_dir = results_dir
     args.plot_path = plot_dir
@@ -103,7 +118,7 @@ def main():
         # Example usage (assuming 'mlp_blocks' is your list of MLP blocks):
         create_histograms_for_mlp_blocks(args, mlp_blocks)
 
-    elif model_name in ('Qwen3-0.6B'):
+    elif model_name in ('qwen3-0.6B', 'qwen2-0.5B', 'qwen2-7B'):
         # Prepare input text
         model,tokenizer = get_model(args)
         # summary(model, input_size=(1, input_ids['input_ids'].shape[1]))
@@ -122,7 +137,8 @@ def main():
 
     if model_name in ('gemma-3-12b-it', 'gemma-3-4b-it'):
         model, processor = get_model(args)
-        args.results_dir = args.results_dir / "vision_model"
+        results_dir = args.results_dir
+        args.results_dir = results_dir / "vision" / f"{args.model}_vision"
         args.plot_path = args.results_dir / "plots"
         vision_model_mlp_blocks = []
 
@@ -135,7 +151,7 @@ def main():
         # Example usage (assuming 'mlp_blocks' is your list of MLP blocks):
         create_histograms_for_mlp_blocks(args, vision_model_mlp_blocks)
 
-        args.results_dir = args.results_dir / "language_model"
+        args.results_dir = results_dir / "language" / f"{args.model}_language"
         args.plot_path = args.results_dir / "plots"
         language_model_mlp_blocks = []
 
