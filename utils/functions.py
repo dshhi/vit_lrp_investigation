@@ -159,6 +159,253 @@ def create_signed_margin_relu_hook(alpha):
                 
     return forward_hook
 
+
+class SignedMarginLinear(nn.Module):
+    def __init__(self, in_features, out_features, alpha=0.1, bias=True, device=None):
+        super().__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+        self.alpha = alpha
+        self.device = device
+        
+        # Initialize parameters on the correct device
+        self.weight = nn.Parameter(torch.empty(out_features, in_features, device=device))
+        if bias:
+            self.bias = nn.Parameter(torch.empty(out_features, device=device))
+        else:
+            self.register_parameter('bias', None)
+
+    def forward(self, input):
+        # Ensure input is on the correct device
+        if self.device is not None:
+            input = input.to(self.device)
+        
+        # Handle image inputs: [batch_size, width, len] or [batch_size, num_patches, hidden_dim]
+        # weight shape: [out_features, in_features]
+        
+        # Store original shape for reshaping later
+        original_shape = input.shape
+        
+        # Reshape input to 2D: [batch_size * width, len] 
+        # The last dimension should match in_features
+        if input.dim() > 2:
+            # Flatten all dimensions except the last one
+            input_2d = input.view(-1, input.shape[-1])
+        else:
+            input_2d = input
+            
+        D = input_2d @ self.weight.t()  # [batch_size * width, out_features]
+
+        # Calculate norms
+        r = self.weight.norm(dim=1, keepdim=True)        # [out_features, 1]
+        s = input_2d.norm(dim=1, keepdim=True)           # [batch_size * width, 1]
+        
+        # Calculate margin: need to broadcast properly
+        # r: [out_features, 1], s: [batch_size * width, 1]
+        # We want: [batch_size * width, out_features]
+        margin = self.alpha * (s * r.t())  # Broadcasting: [batch_size * width, 1] * [1, out_features]
+
+        out = D.sign() * F.relu(D.abs() - margin)
+        
+        if self.bias is not None:
+            out += self.bias.unsqueeze(0)  # Broadcast bias
+            
+        # Reshape back to original input shape but with out_features as last dim
+        # [batch_size, width, out_features]
+        if len(original_shape) > 2:
+            out = out.view(*original_shape[:-1], self.out_features)
+            
+        return out
+
+
+def replace_mlp_downstream_layer(args, mlp_block, alpha=0.1):
+    """
+    Replace the downstream linear layer in the MLP block with SignedMarginLinear layer.
+    Only replaces the specific layer that corresponds to the one analyzed in calculate_angles_mlp_block.
+
+    Parameters:
+    args: Arguments containing model information
+    mlp_block: The MLP block in which to replace the downstream linear layer
+    alpha: Alpha parameter for SignedMarginLinear layer
+
+    Returns:
+    mlp_block: Modified MLP block with replaced downstream linear layer
+    """
+    
+    # Import here to avoid circular imports if needed
+    from utils.functions import SignedMarginLinear
+    
+    try:
+        # Get device from args or infer from the mlp_block
+        device = getattr(args, 'device', None)
+        if device is None:
+            # Try to infer device from the first parameter in the mlp_block
+            for param in mlp_block.parameters():
+                device = param.device
+                break
+        
+        # Find and replace the downstream layer based on model type
+        for name, module in mlp_block.named_modules():
+            if args.model in ('vitb16', 'vitl16'):
+                if name == '3':  # The layer at index 3
+                    old_linear = module
+                    new_linear = SignedMarginLinear(
+                        in_features=old_linear.in_features,
+                        out_features=old_linear.out_features,
+                        alpha=alpha,
+                        bias=old_linear.bias is not None,
+                        device=device
+                    )
+                    # Move to correct device and copy weights and bias
+                    new_linear = new_linear.to(device)
+                    with torch.no_grad():
+                        new_linear.weight.copy_(old_linear.weight.to(device))
+                        if old_linear.bias is not None:
+                            new_linear.bias.copy_(old_linear.bias.to(device))
+                    
+                    # Replace the layer in the sequential block
+                    mlp_block[3] = new_linear
+                    print(f"Replaced layer '3' for model {args.model} on device {device}")
+                    break
+                    
+            elif args.model in ('qwen3-0.6B', 'qwen2-0.5B', 'qwen2-7B'):
+                if name == 'down_proj':
+                    old_linear = module
+                    new_linear = SignedMarginLinear(
+                        in_features=old_linear.in_features,
+                        out_features=old_linear.out_features,
+                        alpha=alpha,
+                        bias=old_linear.bias is not None,
+                        device=device
+                    )
+                    # Move to correct device and copy weights and bias
+                    new_linear = new_linear.to(device)
+                    with torch.no_grad():
+                        new_linear.weight.copy_(old_linear.weight.to(device))
+                        if old_linear.bias is not None:
+                            new_linear.bias.copy_(old_linear.bias.to(device))
+                    
+                    # Replace the layer
+                    mlp_block.down_proj = new_linear
+                    print(f"Replaced 'down_proj' layer for model {args.model} on device {device}")
+                    break
+                    
+            elif args.model in ('gemma-3-4b-it', 'gemma-3-12b-it'):
+                if name == 'fc2':
+                    old_linear = module
+                    new_linear = SignedMarginLinear(
+                        in_features=old_linear.in_features,
+                        out_features=old_linear.out_features,
+                        alpha=alpha,
+                        bias=old_linear.bias is not None,
+                        device=device
+                    )
+                    # Move to correct device and copy weights and bias
+                    new_linear = new_linear.to(device)
+                    with torch.no_grad():
+                        new_linear.weight.copy_(old_linear.weight.to(device))
+                        if old_linear.bias is not None:
+                            new_linear.bias.copy_(old_linear.bias.to(device))
+                    
+                    # Replace the layer
+                    mlp_block.fc2 = new_linear
+                    print(f"Replaced 'fc2' layer for model {args.model} on device {device}")
+                    break
+                elif name == 'down_proj':
+                    old_linear = module
+                    new_linear = SignedMarginLinear(
+                        in_features=old_linear.in_features,
+                        out_features=old_linear.out_features,
+                        alpha=alpha,
+                        bias=old_linear.bias is not None,
+                        device=device
+                    )
+                    # Move to correct device and copy weights and bias
+                    new_linear = new_linear.to(device)
+                    with torch.no_grad():
+                        new_linear.weight.copy_(old_linear.weight.to(device))
+                        if old_linear.bias is not None:
+                            new_linear.bias.copy_(old_linear.bias.to(device))
+                    
+                    # Replace the layer
+                    mlp_block.down_proj = new_linear
+                    print(f"Replaced 'down_proj' layer for model {args.model} on device {device}")
+                    break
+                    
+            elif args.model in ('vit-base-patch16-224', 'vit-large-patch16-224-in21k'):
+                if name == 'dense':
+                    old_linear = module
+                    new_linear = SignedMarginLinear(
+                        in_features=old_linear.in_features,
+                        out_features=old_linear.out_features,
+                        alpha=alpha,
+                        bias=old_linear.bias is not None,
+                        device=device
+                    )
+                    # Move to correct device and copy weights and bias
+                    new_linear = new_linear.to(device)
+                    with torch.no_grad():
+                        new_linear.weight.copy_(old_linear.weight.to(device))
+                        if old_linear.bias is not None:
+                            new_linear.bias.copy_(old_linear.bias.to(device))
+                    
+                    # Replace the layer
+                    mlp_block.dense = new_linear
+                    print(f"Replaced 'dense' layer for model {args.model} on device {device}")
+                    break
+        
+    except Exception as e:
+        print(f"Error replacing downstream linear layer in MLP block: {e}")
+        print(f"MLP block structure: {mlp_block}")
+        
+    return mlp_block
+
+def replace_linear_layers_with_signed_margin(model, alpha=0.1, target_layers=None):
+    """
+    Replace specific Linear layers in the model with SignedMarginLinear layers.
+    
+    Args:
+        model: The model to modify
+        alpha: Alpha parameter for SignedMarginLinear
+        target_layers: List of layer names/patterns to replace (e.g., ['mlp.3', 'output.dense'])
+                      If None, replaces all Linear layers
+    """
+    def should_replace_layer(name, module):
+        if not isinstance(module, nn.Linear):
+            return False
+        if target_layers is None:
+            return True
+        return any(target in name for target in target_layers)
+    
+    def replace_layers(module, name=""):
+        for child_name, child_module in list(module.named_children()):
+            full_name = f"{name}.{child_name}" if name else child_name
+            
+            if should_replace_layer(full_name, child_module):
+                # Create new SignedMarginLinear layer
+                new_layer = SignedMarginLinear(
+                    in_features=child_module.in_features,
+                    out_features=child_module.out_features,
+                    alpha=alpha,
+                    bias=child_module.bias is not None
+                )
+                
+                # Copy weights and bias from original layer
+                with torch.no_grad():
+                    new_layer.weight.copy_(child_module.weight)
+                    if child_module.bias is not None:
+                        new_layer.bias.copy_(child_module.bias)
+                
+                # Replace the layer
+                setattr(module, child_name, new_layer)
+                print(f"Replaced {full_name} with SignedMarginLinear")
+            else:
+                # Recursively process child modules
+                replace_layers(child_module, full_name)
+    
+    replace_layers(model)
+    return model
+
 def low_rank_svd_decomposition(weight_matrix: torch.Tensor, rank: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Perform low-rank SVD decomposition on a weight matrix.

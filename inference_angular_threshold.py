@@ -23,7 +23,7 @@ from utils.logging import get_logger
 from utils.args import get_public_config
 from utils.functions import set_seed
 from utils.functions import create_signed_margin_relu_hook 
-
+from utils.functions import replace_mlp_downstream_layer 
 
 import pdb
 
@@ -76,15 +76,9 @@ def main():
         for encoder_block in model.encoder.layers:
             # Each encoder block typically has an MLP layer named 'mlp'
             mlp_layer = encoder_block.mlp
+            mlp_layer = replace_mlp_downstream_layer(args, mlp_layer, alpha)
             mlp_blocks.append(mlp_layer)
             
-            # Register hook on the MLP layer (adjust index as needed)
-            if hasattr(mlp_layer, '__getitem__') and len(mlp_layer) > 3:
-                pdb.set_trace()
-                mlp_layer[3].register_forward_hook(create_signed_margin_relu_hook(alpha))
-            else:
-                # If mlp_layer is not indexable, register on the whole layer
-                mlp_layer.register_forward_hook(create_signed_margin_relu_hook(alpha))
 
     elif model_name in ('vit-base-patch16-224','vit-large-patch16-224-in21k'):
         model, processor = get_model(args)
