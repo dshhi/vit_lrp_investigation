@@ -1,8 +1,9 @@
 import numpy as np
-import torch
-import torch.nn as nn
 from pathlib import Path
 from PIL import Image
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 from torchvision.models import vision_transformer
 
 from zennit.image import imgify
@@ -115,6 +116,48 @@ def get_model(args):
         processor = AutoProcessor.from_pretrained(model_id)
 
         return model, processor
+
+def signed_margin_relu(W, X, alpha):
+    D = W @ X
+    r = W.norm(dim=1, keepdim=True)
+    s = X.norm(dim=0, keepdim=True)
+    margin = alpha * (r @ s)
+    return D.sign() * F.relu(D.abs() - margin)
+
+def create_signed_margin_relu_hook(alpha):
+    def forward_hook(module, input, output):
+        with torch.no_grad():
+            # Get the input (first element if tuple)
+            X = input[0] if isinstance(input, tuple) else input
+            
+            # Get weights from the module
+            if hasattr(module, 'weight') and module.weight is not None:
+                W = module.weight
+                
+                # Apply signed margin ReLU
+                # Reshape input for matrix multiplication if needed
+                original_shape = X.shape
+                if X.dim() == 3:  # (batch, tokens, features)
+                    batch, tokens, features = X.shape
+                    X_flat = X.view(-1, features).T  # (features, batch*tokens)
+                else:
+                    X_flat = X.T if X.dim() == 2 else X
+                
+                # Apply signed_margin_relu
+                result = signed_margin_relu(W, X_flat, alpha)
+                
+                # Reshape back to original format
+                if X.dim() == 3:
+                    result = result.T.view(batch, tokens, -1)
+                elif X.dim() == 2:
+                    result = result.T
+                
+                return result
+            else:
+                # If no weights found, return original output
+                return output
+                
+    return forward_hook
 
 def low_rank_svd_decomposition(weight_matrix: torch.Tensor, rank: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """

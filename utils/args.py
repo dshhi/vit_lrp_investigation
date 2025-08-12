@@ -20,6 +20,8 @@ def get_public_config():
                        help='Apply low-rank SVD decomposition to MLP blocks')
     parser.add_argument('--svd_rank', type=int, default=50,
                        help='Rank for low-rank SVD approximation of MLP weights')
-    #
+    # Signed Margin ReLU
+    parser.add_argument('--alpha', type=float, default=0.1,
+                       help='Alpha parameter for signed margin ReLU hook')
 
     return parser
