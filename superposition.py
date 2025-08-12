@@ -14,6 +14,7 @@ from utils.logging import get_logger
 from utils.functions import get_model 
 from utils.functions import set_seed
 from utils.functions import create_histograms_for_mlp_blocks
+from utils.functions import create_low_rank_mlp_blocks
 # hooks
 from utils.functions import create_hook
 
@@ -61,7 +62,7 @@ def get_config():
                       ):
         results_dir = results_dir / "language" / f"{args.model}"
     #vision models
-    elif args.model in ('vitb16', 'vitl16',
+    elif args.model in ('vitb16', 'vitl16','vit-base-patch16-224','vit-large-patch16-224-in21k',
                         ):
         results_dir = results_dir / "vision" / f"{args.model}"
     #multi-modal models
@@ -70,6 +71,12 @@ def get_config():
         # save path gets handled in function for vision and language part
         # separately
         pass
+
+    if args.use_svd:
+        svd_suffix = f"_svd_rank_{args.svd_rank}"
+        if args.model not in ('gemma-3-12b-it', 'gemma-3-4b-it'):
+            results_dir = Path(str(results_dir) + svd_suffix)
+        # For multi-modal models, SVD suffix will be added later in main()
 
     plot_dir = f"{results_dir}/plots"
     args.results_dir = results_dir
@@ -92,20 +99,20 @@ def main():
     model_name = args.model
 
     if model_name in ('vitb16', 'vitl16'):
-        model, weights = get_vit_imagenet(args)
+        model, weights = get_model(args)
         # for layer in model.encoder.layers:
         #     #layer.mlp[0].register_forward_hook(create_hook(2500))
         #     layer.mlp[3].register_forward_hook(create_hook(500))
         #     pass
 
         # Load and preprocess the input image
-        image = Image.open('cat_dog.jpg').convert('RGB')
+        # image = Image.open('cat_dog.jpg').convert('RGB')
         # image_resized = image.resize([224,224])
         # image_resized.convert('L').save('input_resized_grayscale.jpg')
         # image_resized.save('input_resized.jpg')
-        input_tensor = weights.transforms()(image).unsqueeze(0).to("cuda")
+        # input_tensor = weights.transforms()(image).unsqueeze(0).to("cuda")
         # img_size = image.size  # (width, height)
-        summary(model, (input_tensor.shape))
+        # summary(model, (input_tensor.shape))
         # Assuming 'model' is your Vision Transformer model
         mlp_blocks = []
 
@@ -114,6 +121,10 @@ def main():
             # Each encoder block typically has an MLP layer named 'mlp'
             mlp_layer = encoder_block.mlp
             mlp_blocks.append(mlp_layer)
+
+        if args.use_svd:
+            logger.info(f"Applying rank-{args.svd_rank} SVD to {len(mlp_blocks)} MLP blocks")
+            mlp_blocks = create_low_rank_mlp_blocks(mlp_blocks, args.svd_rank)
 
         # Example usage (assuming 'mlp_blocks' is your list of MLP blocks):
         create_histograms_for_mlp_blocks(args, mlp_blocks)
@@ -132,6 +143,26 @@ def main():
             mlp_layer = model_layer.mlp
             mlp_blocks.append(mlp_layer)
 
+        if args.use_svd:
+            logger.info(f"Applying rank-{args.svd_rank} SVD to {len(mlp_blocks)} MLP blocks")
+            mlp_blocks = create_low_rank_mlp_blocks(mlp_blocks, args.svd_rank)
+
+        create_histograms_for_mlp_blocks(args, mlp_blocks)
+
+    elif model_name in ('vit-base-patch16-224','vit-large-patch16-224-in21k'):
+        model, processor = get_model(args)
+
+        mlp_blocks = []
+
+        # Access the encoder layers
+        for model_layer in model.encoder.layer:
+            mlp_layer = model_layer.output
+            mlp_blocks.append(mlp_layer)
+
+        if args.use_svd:
+            logger.info(f"Applying rank-{args.svd_rank} SVD to {len(mlp_blocks)} MLP blocks")
+            mlp_blocks = create_low_rank_mlp_blocks(mlp_blocks, args.svd_rank)
+
         # Example usage (assuming 'mlp_blocks' is your list of MLP blocks):
         create_histograms_for_mlp_blocks(args, mlp_blocks)
 
@@ -148,6 +179,10 @@ def main():
             mlp_layer = model_layer.mlp
             vision_model_mlp_blocks.append(mlp_layer)
 
+        if args.use_svd:
+            logger.info(f"Applying rank-{args.svd_rank} SVD to {len(vision_model_mlp_blocks)} vision MLP blocks")
+            vision_model_mlp_blocks = create_low_rank_mlp_blocks(vision_model_mlp_blocks, args.svd_rank)
+
         # Example usage (assuming 'mlp_blocks' is your list of MLP blocks):
         create_histograms_for_mlp_blocks(args, vision_model_mlp_blocks)
 
@@ -160,6 +195,10 @@ def main():
             # Each encoder block typically has an MLP layer named 'mlp'
             mlp_layer = model_layer.mlp
             language_model_mlp_blocks.append(mlp_layer)
+
+        if args.use_svd:
+            logger.info(f"Applying rank-{args.svd_rank} SVD to {len(language_model_mlp_blocks)} language MLP blocks")
+            language_model_mlp_blocks = create_low_rank_mlp_blocks(language_model_mlp_blocks, args.svd_rank)
 
         # Example usage (assuming 'mlp_blocks' is your list of MLP blocks):
         create_histograms_for_mlp_blocks(args, language_model_mlp_blocks)

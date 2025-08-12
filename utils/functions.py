@@ -1,5 +1,6 @@
 import numpy as np
 import torch
+import torch.nn as nn
 from pathlib import Path
 from PIL import Image
 from torchvision.models import vision_transformer
@@ -16,9 +17,15 @@ import matplotlib.pyplot as plt
 from scipy import stats
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from transformers import AutoProcessor, Gemma3ForConditionalGeneration
+from transformers import ViTImageProcessor, ViTModel
+
+from typing import Tuple, Optional, Union, List
+import copy
+
 import requests
 
 from tqdm import tqdm
+
 
 # reproducibility
 def set_seed(seed):
@@ -77,6 +84,22 @@ def get_model(args):
 
         return model, tokenizer
 
+    elif args.model in ('vit-base-patch16-224','vit-large-patch16-224-in21k'):
+        if (args.model == 'vit-large-patch16-224-in21k'):
+            model_id = "google/vit-large-patch16-224-in21k"
+        elif (args.model == 'vit-base-patch16-224'):
+            model_id = "google/vit-base-patch16-224"
+
+        model = ViTModel.from_pretrained(model_id, device_map=args.device).eval()
+
+        # # Deactivate gradients on parameters to save memory
+        # for param in model.parameters():
+        #     param.requires_grad = False
+        processor = ViTImageProcessor.from_pretrained(model_id)
+            
+        return model, processor
+
+
     elif args.model in ('gemma-3-12b-it', 'gemma-3-4b-it'):
         if (args.model == 'gemma-3-12b-it'):
             model_id = "google/gemma-3-12b-it"
@@ -92,6 +115,88 @@ def get_model(args):
         processor = AutoProcessor.from_pretrained(model_id)
 
         return model, processor
+
+def low_rank_svd_decomposition(weight_matrix: torch.Tensor, rank: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Perform low-rank SVD decomposition on a weight matrix.
+    
+    Args:
+        weight_matrix: Input weight matrix of shape (out_features, in_features)
+        rank: Desired rank for low-rank approximation
+        
+    Returns:
+        Tuple of (U_truncated, S_truncated, V_truncated)
+    """
+    # Perform SVD
+    U, S, Vt = torch.linalg.svd(weight_matrix, full_matrices=False)
+    
+    # Truncate to desired rank
+    rank = min(rank, min(U.shape[0], Vt.shape[0]))
+    U_truncated = U[:, :rank]
+    S_truncated = S[:rank]
+    V_truncated = Vt[:rank, :]
+    
+    return U_truncated, S_truncated, V_truncated
+
+def apply_low_rank_svd_to_mlp_block(mlp_block: nn.Module, rank: int, 
+                                   inplace: bool = False) -> nn.Module:
+    """
+    Apply low-rank SVD to all Linear layers in an MLP block.
+    
+    Args:
+        mlp_block: The MLP block containing Linear layers
+        rank: Desired rank for low-rank approximation
+        inplace: Whether to modify the original block or create a copy
+        
+    Returns:
+        MLP block with low-rank approximated weights
+    """
+    if not inplace:
+        mlp_block = copy.deepcopy(mlp_block)
+    
+    # Apply SVD to all Linear layers in the MLP block
+    for name, layer in mlp_block.named_modules():
+        if isinstance(layer, nn.Linear):
+            with torch.no_grad():
+                # Get original weight
+                original_weight = layer.weight.data
+                
+                # Perform low-rank SVD
+                U, S, V = low_rank_svd_decomposition(original_weight, rank)
+                
+                # Reconstruct low-rank approximation
+                low_rank_weight = U @ torch.diag(S) @ V
+                
+                # Replace the weight
+                layer.weight.data = low_rank_weight
+                
+                print(f"Applied rank-{rank} SVD to layer: {name}")
+                print(f"Original shape: {original_weight.shape}, "
+                      f"Compression ratio: {(U.shape[1] * (U.shape[0] + V.shape[1])) / original_weight.numel():.3f}")
+    
+    return mlp_block
+
+def create_low_rank_mlp_blocks(mlp_blocks: List[nn.Module], rank: int, 
+                              inplace: bool = False) -> List[nn.Module]:
+    """
+    Apply low-rank SVD to a list of MLP blocks.
+    
+    Args:
+        mlp_blocks: List of MLP blocks
+        rank: Desired rank for low-rank approximation
+        inplace: Whether to modify original blocks or create copies
+        
+    Returns:
+        List of MLP blocks with low-rank approximated weights
+    """
+    processed_blocks = []
+    
+    for i, mlp_block in enumerate(mlp_blocks):
+        print(f"Processing MLP block {i+1}/{len(mlp_blocks)}")
+        low_rank_block = apply_low_rank_svd_to_mlp_block(mlp_block, rank, inplace)
+        processed_blocks.append(low_rank_block)
+    
+    return processed_blocks
 
 def calculate_angles_mlp_block(args,mlp_block):
     """
@@ -130,6 +235,10 @@ def calculate_angles_mlp_block(args,mlp_block):
                     weights2 = param.data.cpu().numpy()
                     break
                 if name == 'down_proj.weight':
+                    weights2 = param.data.cpu().numpy()
+                    break
+            elif args.model in ('vit-base-patch16-224','vit-large-patch16-224-in21k'):
+                if name == 'dense.weight':
                     weights2 = param.data.cpu().numpy()
                     break
         
