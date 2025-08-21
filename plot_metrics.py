@@ -29,6 +29,17 @@ def parse_args():
         action="store_true",
         help="Plot logarithm of metrics"
     )
+    parser.add_argument(
+        "--vision-linestyle",
+        default="-",
+        help="Line style for vision models (default: '-' for solid line)"
+    )
+    parser.add_argument(
+        "--language-linestyle", 
+        default="--",
+        help="Line style for language models (default: '--' for dashed line)"
+    )
+
     return parser.parse_args()
 
 def load_model_data(model_path):
@@ -223,7 +234,16 @@ def main():
                 if args.log:
                     y = apply_log_if_needed(y, True)
                 
-                plt.plot(x, y, marker='o', label=model_path.parent.name + "/" + model_path.name)
+                # Determine line style based on model type
+                model_type = model_path.parent.name
+                if model_type == "vision":
+                    linestyle = args.vision_linestyle
+                elif model_type == "language":
+                    linestyle = args.language_linestyle
+                else:
+                    linestyle = "-"  # fallback to solid line
+
+                plt.plot(x, y, marker='o', linestyle=linestyle, label=model_path.parent.name + "/" + model_path.name)
                 has_data = True
             
             except Exception as e:

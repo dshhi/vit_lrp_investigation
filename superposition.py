@@ -58,12 +58,16 @@ def get_config():
     args = parser.parse_args()
     results_dir = SCRIPT_DIR / "results"
     #language models
-    if args.model in ('qwen3-0.6B', 'qwen2-0.5B','qwen2-7B',
+    if args.model in ('qwen3-8B','qwen3-4B','qwen3-0.6B', 'qwen2-0.5B','qwen2-7B',
                       ):
         results_dir = results_dir / "language" / f"{args.model}"
     #vision models
     elif args.model in ('vitb16', 'vitl16','vit-base-patch16-224','vit-large-patch16-224-in21k',
                         ):
+        results_dir = results_dir / "vision" / f"{args.model}"
+    elif args.model in ('dinov2-base', 'dinov2-large',):
+        results_dir = results_dir / "vision" / f"{args.model}"
+    elif args.model in ('vit_giant_patch14_dinov2.lvd142m'):
         results_dir = results_dir / "vision" / f"{args.model}"
     #multi-modal models
     elif args.model in ('gemma-3-12b-it', 'gemma-3-4b-it',
@@ -129,7 +133,7 @@ def main():
         # Example usage (assuming 'mlp_blocks' is your list of MLP blocks):
         create_histograms_for_mlp_blocks(args, mlp_blocks)
 
-    elif model_name in ('qwen3-0.6B', 'qwen2-0.5B', 'qwen2-7B'):
+    elif model_name in ('qwen3-8B','qwen3-4B','qwen3-0.6B', 'qwen2-0.5B', 'qwen2-7B'):
         # Prepare input text
         model,tokenizer = get_model(args)
         # summary(model, input_size=(1, input_ids['input_ids'].shape[1]))
@@ -166,7 +170,43 @@ def main():
         # Example usage (assuming 'mlp_blocks' is your list of MLP blocks):
         create_histograms_for_mlp_blocks(args, mlp_blocks)
 
-    if model_name in ('gemma-3-12b-it', 'gemma-3-4b-it'):
+    elif model_name in ('dinov2-base', 'dinov2-large'):
+        model, processor = get_model(args)
+
+        mlp_blocks = []
+
+        # Access the encoder layers
+        for model_layer in model.encoder.layer:
+            # Each encoder block typically has an MLP layer named 'mlp'
+            mlp_layer = model_layer.mlp
+            mlp_blocks.append(mlp_layer)
+
+        if args.use_svd:
+            logger.info(f"Applying rank-{args.svd_rank} SVD to {len(mlp_blocks)} vision MLP blocks")
+            mlp_blocks = create_low_rank_mlp_blocks(vision_model_mlp_blocks, args.svd_rank)
+
+        # Example usage (assuming 'mlp_blocks' is your list of MLP blocks):
+        create_histograms_for_mlp_blocks(args, mlp_blocks)
+
+    elif model_name in ('vit_giant_patch14_dinov2.lvd142m'):
+        model = get_model(args)
+
+        mlp_blocks = []
+
+        # Access the encoder layers
+        for model_layer in model.blocks:
+            # Each encoder block typically has an MLP layer named 'mlp'
+            mlp_layer = model_layer.mlp
+            mlp_blocks.append(mlp_layer)
+
+        if args.use_svd:
+            logger.info(f"Applying rank-{args.svd_rank} SVD to {len(mlp_blocks)} vision MLP blocks")
+            mlp_blocks = create_low_rank_mlp_blocks(vision_model_mlp_blocks, args.svd_rank)
+
+        # Example usage (assuming 'mlp_blocks' is your list of MLP blocks):
+        create_histograms_for_mlp_blocks(args, mlp_blocks)
+
+    elif model_name in ('gemma-3-12b-it', 'gemma-3-4b-it'):
         model, processor = get_model(args)
         results_dir = args.results_dir
         args.results_dir = results_dir / "vision" / f"{args.model}_vision"

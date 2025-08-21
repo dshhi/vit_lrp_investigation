@@ -8,7 +8,7 @@ def get_public_config():
     # parser.add_argument("--device", type=str, default="cuda")
 
     # Model
-    parser.add_argument('--model', type=str, choices=['qwen3-0.6B','qwen2-7B','qwen2-0.5B', 'gemma-3-12b-it', 'gemma-3-4b-it','vitb16', 'vitl16', 'vit-base-patch16-224','vit-large-patch16-224-in21k'], required=True, 
+    parser.add_argument('--model', type=str, choices=['dinov2-base','dinov2-large','vit_giant_patch14_dinov2.lvd142m','qwen3-8B','qwen3-4B','qwen3-0.6B','qwen2-7B','qwen2-0.5B', 'gemma-3-12b-it', 'gemma-3-4b-it','vitb16', 'vitl16', 'vit-base-patch16-224','vit-large-patch16-224-in21k'], required=True, 
                         help='Select the model to use in lowercase.', default = 'vitb16')
     parser.add_argument("--seed", type=int, default=1)
 

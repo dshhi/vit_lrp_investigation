@@ -1,10 +1,12 @@
 import numpy as np
 from pathlib import Path
+import cv2
 from PIL import Image
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torchvision.models import vision_transformer
+from skimage.metrics import structural_similarity
 
 from zennit.image import imgify
 from zennit.composites import LayerMapComposite
@@ -17,8 +19,11 @@ import os
 import matplotlib.pyplot as plt
 from scipy import stats
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoImageProcessor, AutoModel
 from transformers import AutoProcessor, Gemma3ForConditionalGeneration
 from transformers import ViTImageProcessor, ViTModel
+import timm
+from urllib.request import urlopen
 
 from typing import Tuple, Optional, Union, List
 import copy
@@ -62,13 +67,17 @@ def get_model(args):
         return model, weights
 
     # Load the tokenizer and model
-    elif args.model in ('qwen3-0.6B', 'qwen2-0.5B','qwen2-7B'):
+    elif args.model in ('qwen3-8B','qwen3-4B','qwen3-0.6B', 'qwen2-0.5B','qwen2-7B'):
         if args.model == 'qwen2-0.5B':
             model_name = "Qwen/Qwen2-0.5B"
         if args.model == 'qwen2-7B':
             model_name = "Qwen/Qwen2-7B"
         elif args.model == 'qwen3-0.6B':
             model_name = "Qwen/Qwen3-0.6B"
+        elif args.model == 'qwen3-4B':
+            model_name = "Qwen/Qwen3-4B"
+        elif args.model == 'qwen3-8B':
+            model_name = "Qwen/Qwen3-8B"
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
@@ -100,6 +109,20 @@ def get_model(args):
             
         return model, processor
 
+    elif args.model in ('dinov2-base','dinov2-large'):
+        if (args.model == 'dinov2-base'):
+            model_id = "facebook/dinov2-base"
+        elif(args.model == 'dinov2-large'):
+            model_id = "facebook/dinov2-large"
+        model = AutoModel.from_pretrained(model_id, device_map=args.device).eval()
+        processor = AutoImageProcessor.from_pretrained(model_id)
+
+        return model, processor
+
+    elif args.model in ('vit_giant_patch14_dinov2.lvd142m'):
+        model_id = "timm/vit_giant_patch14_dinov2.lvd142m"
+        model = timm.create_model(model_id, pretrained=True)
+        return model
 
     elif args.model in ('gemma-3-12b-it', 'gemma-3-4b-it'):
         if (args.model == 'gemma-3-12b-it'):
@@ -176,45 +199,16 @@ class SignedMarginLinear(nn.Module):
             self.register_parameter('bias', None)
 
     def forward(self, input):
-        # Ensure input is on the correct device
-        if self.device is not None:
-            input = input.to(self.device)
-        
-        # Handle image inputs: [batch_size, width, len] or [batch_size, num_patches, hidden_dim]
-        # weight shape: [out_features, in_features]
-        
-        # Store original shape for reshaping later
         original_shape = input.shape
-        
-        # Reshape input to 2D: [batch_size * width, len] 
-        # The last dimension should match in_features
-        if input.dim() > 2:
-            # Flatten all dimensions except the last one
-            input_2d = input.view(-1, input.shape[-1])
-        else:
-            input_2d = input
-            
-        D = input_2d @ self.weight.t()  # [batch_size * width, out_features]
-
-        # Calculate norms
-        r = self.weight.norm(dim=1, keepdim=True)        # [out_features, 1]
-        s = input_2d.norm(dim=1, keepdim=True)           # [batch_size * width, 1]
-        
-        # Calculate margin: need to broadcast properly
-        # r: [out_features, 1], s: [batch_size * width, 1]
-        # We want: [batch_size * width, out_features]
-        margin = self.alpha * (s * r.t())  # Broadcasting: [batch_size * width, 1] * [1, out_features]
-
+        input = input.squeeze()
+        D = input @ self.weight.t() # activations
+        r = self.weight.norm(dim=1, keepdim=True) # radius / magnitude of weight vectors
+        s = input.norm(dim=1, keepdim=True) # radius / magnitude of input vectors
+        margin = self.alpha * (s * r.t())
         out = D.sign() * F.relu(D.abs() - margin)
-        
         if self.bias is not None:
             out += self.bias.unsqueeze(0)  # Broadcast bias
-            
-        # Reshape back to original input shape but with out_features as last dim
-        # [batch_size, width, out_features]
-        if len(original_shape) > 2:
-            out = out.view(*original_shape[:-1], self.out_features)
-            
+        out = out.unsqueeze(0)
         return out
 
 
@@ -238,12 +232,6 @@ def replace_mlp_downstream_layer(args, mlp_block, alpha=0.1):
     try:
         # Get device from args or infer from the mlp_block
         device = getattr(args, 'device', None)
-        if device is None:
-            # Try to infer device from the first parameter in the mlp_block
-            for param in mlp_block.parameters():
-                device = param.device
-                break
-        
         # Find and replace the downstream layer based on model type
         for name, module in mlp_block.named_modules():
             if args.model in ('vitb16', 'vitl16'):
@@ -256,19 +244,16 @@ def replace_mlp_downstream_layer(args, mlp_block, alpha=0.1):
                         bias=old_linear.bias is not None,
                         device=device
                     )
-                    # Move to correct device and copy weights and bias
-                    new_linear = new_linear.to(device)
                     with torch.no_grad():
                         new_linear.weight.copy_(old_linear.weight.to(device))
                         if old_linear.bias is not None:
                             new_linear.bias.copy_(old_linear.bias.to(device))
                     
-                    # Replace the layer in the sequential block
                     mlp_block[3] = new_linear
-                    print(f"Replaced layer '3' for model {args.model} on device {device}")
+                    # print(f"Replaced layer '3' for model {args.model} on device {device}")
                     break
                     
-            elif args.model in ('qwen3-0.6B', 'qwen2-0.5B', 'qwen2-7B'):
+            elif args.model in ('qwen3-8B','qwen3-4B','qwen3-0.6B', 'qwen2-0.5B', 'qwen2-7B'):
                 if name == 'down_proj':
                     old_linear = module
                     new_linear = SignedMarginLinear(
@@ -488,6 +473,214 @@ def create_low_rank_mlp_blocks(mlp_blocks: List[nn.Module], rank: int,
     
     return processed_blocks
 
+def calculate_noise_metrics(ref_img_path, img_path):
+    ref_image = cv2.imread(ref_img_path)
+    gray_image = ref_image
+    image = cv2.imread(img_path)
+    
+    # Calculate the noise
+    noise = gray_image - image
+    
+    # Calculate the squared noise
+    squared_noise = noise ** 2
+    
+    # Normalize the image for display purposes
+    noise_normalized = cv2.normalize(image, None, 0, 255, cv2.NORM_MINMAX)
+    noise_image = Image.fromarray(noise_normalized.astype(np.uint8))
+    
+    # Calculate mean and standard deviation of the squared noise
+    mean_squared_noise = np.mean(squared_noise)
+    std_noise = np.std(noise)
+    
+    score = None
+    return mean_squared_noise, std_noise, score
+
+def create_reference_img(model,weights, input_tensor, output_folder):
+    input_tensor.grad = None
+    conv_gamma = 100
+    lin_gamma = 1
+    zennit_comp = LayerMapComposite([
+        (torch.nn.Conv2d, z_rules.Gamma(conv_gamma)),
+        (torch.nn.Linear, z_rules.Gamma(lin_gamma)),
+    ])
+    for layer in model.encoder.layers:
+        #layer.mlp[0].register_forward_hook(create_hook(2500))
+        layer.mlp[3].register_forward_hook(create_hook(100))
+        pass
+    # zennit_comp = LayerMapComposite([
+    #     (torch.nn.Conv2d, z_rules.Epsilon()),
+    #     (torch.nn.Linear, z_rules.Epsilon()),
+    # ])
+    zennit_comp.register(model)
+    y = model(input_tensor.requires_grad_())
+    _, top5_classes = torch.topk(y, 5, dim=1)
+    top5_classes = top5_classes.squeeze(0).tolist()
+    labels = weights.meta["categories"]
+    top5_labels = [labels[class_idx] for class_idx in top5_classes]
+    y[0, 156].backward()
+    zennit_comp.remove()
+    heatmap_gamma = (input_tensor * input_tensor.grad).sum(1)
+    heatmap_gamma = heatmap_gamma / abs(heatmap_gamma).max()
+    heatmap_gamma = heatmap_gamma.detach().cpu().numpy()
+    img_gamma = imgify(heatmap_gamma, vmin=-1, vmax=1)
+    output_folder = Path(output_folder)
+    output_folder.mkdir(exist_ok=True)
+    img_gamma.convert('RGB').save(output_folder / 'vit_heatmap_reference.png')
+
+def create_alpha_angle_img(args,input_tensor, output_folder):
+    start, stop, step = args.alpha_range
+    for alpha in tqdm(np.arange(start, stop, step)):
+        model, weights = get_model(args)
+        if args.model in ('vitb16', 'vitl16'):
+            model, weights = get_model(args)
+            mlp_blocks = []
+
+            # Access the encoder layers
+            for encoder_block in model.encoder.layers:
+                # Each encoder block typically has an MLP layer named 'mlp'
+                mlp_layer = encoder_block.mlp
+                mlp_layer = replace_mlp_downstream_layer(args, mlp_layer, alpha)
+                mlp_blocks.append(mlp_layer)
+
+        elif model_name in ('vit-base-patch16-224','vit-large-patch16-224-in21k'):
+            pass
+        elif model_name in ('gemma-3-12b-it', 'gemma-3-4b-it'):
+            pass
+
+        # Load and preprocess the input image
+        image = Image.open('cat_dog.jpg').convert('RGB')
+        image_resized = image.resize([224,224])
+        image_resized.save('input_resized.jpg')
+        image_resized.convert('L').save('input_resized_grayscale.jpg')
+        input_tensor = weights.transforms()(image).unsqueeze(0).to("cuda")
+        img_size = image.size  # (width, height)
+
+        # Store the generated heatmaps
+        heatmaps = []
+
+        input_tensor.grad = None
+        # zennit_comp = LayerMapComposite([
+        #     (torch.nn.Conv2d, z_rules.ZPlus()),
+        #     (torch.nn.Linear, z_rules.Epsilon()),
+        # ])
+        zennit_comp = LayerMapComposite([
+            (torch.nn.Conv2d, z_rules.ZPlus()),
+            (torch.nn.Linear, z_rules.Epsilon()),
+        ])
+        zennit_comp.register(model)
+        y = model(input_tensor.requires_grad_())
+        _, top5_classes = torch.topk(y, 5, dim=1)
+        top5_classes = top5_classes.squeeze(0).tolist()
+        labels = weights.meta["categories"]
+        top5_labels = [labels[class_idx] for class_idx in top5_classes]
+        y[0, 156].backward()
+        zennit_comp.remove()
+        heatmap = (input_tensor * input_tensor.grad).sum(1)
+        heatmap = heatmap / abs(heatmap).max()
+        heatmap = heatmap.detach().cpu().numpy()
+        img = imgify(heatmap, vmin=-1, vmax=1)
+        output_folder = Path(output_folder)
+        output_folder.mkdir(exist_ok=True)
+        img.convert('RGB').save(output_folder / f'vit_heatmap_alpha{alpha:.4f}.png')
+
+def calc_noise_array(args, output_folder):
+    output_folder = Path(output_folder)
+    ref_img_path = output_folder / "vit_heatmap_reference.png"
+    results = []  # Store both alpha and metrics together
+    start, stop, step = args.alpha_range
+    
+    for alpha in tqdm(np.arange(start, stop, step)):
+        img_path = output_folder / f"vit_heatmap_alpha{alpha:.4f}.png"
+        try:
+            mean_noise, std_noise, score = calculate_noise_metrics(ref_img_path, img_path)
+            # Store alpha and metrics together to ensure they stay synchronized
+            results.append({
+                'alpha': alpha,
+                'mean_noise': mean_noise,
+                'std_noise': std_noise,
+                'score': score
+            })
+        except Exception as e:
+            print(f"Skipping alpha {alpha:.4f}: {str(e)}")
+            continue
+    
+    return results
+
+
+def plot_noise_metrics(results, metric, model, output_folder):
+    output_folder = Path(output_folder)
+    output_folder.mkdir(exist_ok=True)
+    
+    if not results:
+        print("No data to plot!")
+        return
+    
+    # Extract alpha values and corresponding metrics
+    alpha_values = [entry['alpha'] for entry in results]
+    noise_metrics = [entry[metric] for entry in results]
+    
+    print(f"Plotting {len(alpha_values)} points")
+    print(f"Alpha range: {min(alpha_values):.4f} to {max(alpha_values):.4f}")
+    
+    plt.style.use('ggplot')
+    plt.figure(figsize=(12, 8), dpi=300)
+    
+    # Plot using alpha values as x-axis
+    plt.plot(alpha_values, noise_metrics, linestyle='-', color='#FF5733', linewidth=1.5, 
+             label=metric.replace('_', ' ').title())
+    
+    # Find minima and their corresponding alpha values
+    minima_indices = np.argsort(noise_metrics)[:3]
+    minima_values = [noise_metrics[i] for i in minima_indices]
+    minima_alphas = [alpha_values[i] for i in minima_indices]
+    
+    # Plot minima points
+    plt.scatter(minima_alphas, minima_values, color='blue', zorder=5, label='Top 3 Minima')
+    
+    # Annotate minima points with alpha values and metric values
+    for i, (alpha, value) in enumerate(zip(minima_alphas, minima_values)):
+        plt.text(alpha, value, f'α: {alpha:.4f}\nVal: {value:.2f}', 
+                 fontsize=10, ha='center', va='bottom', color='blue',
+                 bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.8))
+    
+    plt.title(f'{metric.replace("_", " ").title()} vs Alpha Values', fontsize=16)
+    plt.xlabel('Alpha Value', fontsize=14)
+    plt.ylabel(metric.replace('_', ' ').title(), fontsize=14)
+    plt.xticks(fontsize=12)
+    plt.yticks(fontsize=12)
+    plt.grid(True)
+    
+    img_path = output_folder / f'noise_plot_{model}_{metric}.png'
+    plt.legend()
+    plt.savefig(img_path, dpi=300, bbox_inches='tight')
+    plt.close()  # Close the figure to free memory
+    plt.show()  # Remove this if you don't want to display the plot
+
+def create_topk_img(input_tensor, output_folder):
+    for k in tqdm(range(768)):
+        model, weights = get_vit_imagenet()
+        for layer in model.encoder.layers:
+            layer.mlp[3].register_forward_hook(create_hook(k))
+        input_tensor.grad = None
+        zennit_comp = LayerMapComposite([
+            (torch.nn.Conv2d, z_rules.ZPlus()),
+            (torch.nn.Linear, z_rules.Epsilon()),
+        ])
+        zennit_comp.register(model)
+        y = model(input_tensor.requires_grad_())
+        _, top5_classes = torch.topk(y, 5, dim=1)
+        top5_classes = top5_classes.squeeze(0).tolist()
+        labels = weights.meta["categories"]
+        top5_labels = [labels[class_idx] for class_idx in top5_classes]
+        y[0, 156].backward()
+        zennit_comp.remove()
+        heatmap = (input_tensor * input_tensor.grad).sum(1)
+        heatmap = heatmap / abs(heatmap).max()
+        heatmap = heatmap.detach().cpu().numpy()
+        img = imgify(heatmap, vmin=-1, vmax=1)
+        output_folder.mkdir(exist_ok=True)
+        img.convert('RGB').save(output_folder / f'vit_heatmap_top{k}.png')
+
 def calculate_angles_mlp_block(args,mlp_block):
     """
     Calculate angles between weight vectors in the MLP block.
@@ -515,8 +708,18 @@ def calculate_angles_mlp_block(args,mlp_block):
                 if name == '3.weight':
                     weights2 = param.data.cpu().numpy()
                     break
-            elif args.model in ('qwen3-0.6B','qwen2-0.5B','qwen2-7B'):
+            elif args.model in ('qwen3-8B','qwen3-4B','qwen3-0.6B','qwen2-0.5B','qwen2-7B'):
                 if name == 'down_proj.weight':
+                    weights2 = param.data.to(torch.float32)
+                    weights2 = weights2.data.cpu().numpy()           
+                    break
+            elif args.model in ('dinov2-base','dinov2-large'):
+                if name == 'fc2.weight':
+                    weights2 = param.data.to(torch.float32)
+                    weights2 = weights2.data.cpu().numpy()           
+                    break
+            elif args.model in ('vit_giant_patch14_dinov2.lvd142m'):
+                if name == 'fc2.weight':
                     weights2 = param.data.to(torch.float32)
                     weights2 = weights2.data.cpu().numpy()           
                     break
